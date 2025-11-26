@@ -32,3 +32,39 @@ if not os.environ.get("TRL_EXPERIMENTAL_SILENCE"):
         UserWarning,
         stacklevel=2,
     )
+
+
+# Experimental Liger Kernel Losses
+try:
+    from .liger_kernel_losses import (
+        LigerFusedLinearGRPOFunction,
+        LigerFusedLinearGRPOLoss,
+        clip_coef_fn,
+        k3_loss_fn,
+    )
+    from .liger_kernel_losses.grpo_loss_variant1 import (
+        LigerFusedLinearGRPOFunctionVariant1,
+        LigerFusedLinearGRPOLossVariant1,
+        k3_loss_fn_variant1,
+    )
+    from .liger_kernel_losses.grpo_loss_variant2 import (
+        LigerFusedLinearGRPOFunctionVariant2,
+        LigerFusedLinearGRPOLossVariant2,
+        k3_loss_fn_variant2,
+    )
+
+    __all__ = [
+        "LigerFusedLinearGRPOFunction",
+        "LigerFusedLinearGRPOLoss",
+        "k3_loss_fn",
+        "clip_coef_fn",
+        "LigerFusedLinearGRPOFunctionVariant1",
+        "LigerFusedLinearGRPOLossVariant1",
+        "k3_loss_fn_variant1",
+        "LigerFusedLinearGRPOFunctionVariant2",
+        "LigerFusedLinearGRPOLossVariant2",
+        "k3_loss_fn_variant2",
+    ]
+except ImportError:
+    # Liger kernel losses are optional
+    __all__ = []

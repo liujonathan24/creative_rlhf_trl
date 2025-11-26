@@ -91,6 +91,7 @@ if is_peft_available():
 
 if is_liger_kernel_available():
     from liger_kernel.chunked_loss import LigerFusedLinearGRPOLoss
+    from ..experimental.liger_kernel_losses.grpo_loss_base import LigerFusedLinearGRPOLoss
 
 if is_vllm_available():
     from vllm import LLM, SamplingParams
@@ -216,6 +217,12 @@ class GRPOTrainer(BaseTrainer):
             process and the trainer instance. It must return a dict with `"prompt_ids"`, `"completion_ids"`, and
             `"logprobs"` fields. Any other fields are forwarded to the reward functions. This feature is experimental
             and may change or be removed at any time without prior notice.
+        loss_class (`type`, *optional*):
+            Custom loss class to use for GRPO training when `use_liger_kernel=True`. If `None`, uses the default
+            `LigerFusedLinearGRPOLoss` from `trl.experimental.liger_kernel_losses.grpo_loss_base`. You can pass
+            experimental variants like `LigerFusedLinearGRPOLossVariant1` or `LigerFusedLinearGRPOLossVariant2`
+            from `trl.experimental.liger_kernel_losses` to experiment with different k3_loss_fn implementations.
+            The custom loss class must have the same interface as `LigerFusedLinearGRPOLoss`.
     """
 
     _tag_names = ["trl", "grpo"]
@@ -247,6 +254,7 @@ class GRPOTrainer(BaseTrainer):
         optimizers: tuple[torch.optim.Optimizer | None, torch.optim.lr_scheduler.LambdaLR | None] = (None, None),
         peft_config: "PeftConfig | None" = None,
         rollout_func: RolloutFunc | None = None,
+        loss_class: type | None = None,
     ):
         # Args
         if args is None:
@@ -517,7 +525,11 @@ class GRPOTrainer(BaseTrainer):
             # redirect the model.module forward to the model forward to ensure pre-forward hooks are called
             self._forward_redirection = _ForwardRedirection()
 
-            self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
+            # Use custom loss class if provided, otherwise use default
+            if loss_class is None:
+                loss_class = LigerFusedLinearGRPOLoss
+
+            self.liger_grpo_loss = loss_class(
                 beta=self.beta,
                 epsilon_low=self.epsilon_low,
                 epsilon_high=self.epsilon_high,
