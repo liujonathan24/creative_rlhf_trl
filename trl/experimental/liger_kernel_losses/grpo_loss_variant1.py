@@ -29,13 +29,18 @@ from .grpo_loss_base import LigerFusedLinearGRPOLoss, clip_coef_fn
 from liger_kernel_losses.fused_linear_ppo import LigerFusedLinearPPOBase
 
 
-def k3_loss_fn_variant1(log_p, log_q):
+def k3_loss_fn_variant1(log_p, log_q, percentile=0.20):
     """
-    Variant 1: Bottom 20% percentile filtering k3 estimate of KL[q, p].
+    Variant 1: Bottom percentile filtering k3 estimate of KL[q, p].
 
-    Uses quick-select (via torch.kthvalue) to find the 20th percentile threshold
-    in log_p, then applies the standard k3 loss calculation only to the bottom 20%
-    of values. For the remaining 80%, returns zero KL penalty.
+    Uses quick-select (via torch.kthvalue) to find the specified percentile threshold
+    in log_p, then applies the standard k3 loss calculation only to values below
+    that threshold. For the remaining values, returns zero KL penalty.
+
+    IMPORTANT: The percentile is calculated across the entire batch (all tokens
+    across all sequences). For example, with percentile=0.20 and batch_size=8,
+    seq_len=512, the threshold is computed over all 8*512=4096 token log probabilities,
+    and approximately 819 tokens (20% of 4096) will have non-zero KL penalty.
 
     This focuses the KL regularization on tokens where the reference model has
     lower confidence, potentially allowing more exploration elsewhere.
@@ -43,33 +48,35 @@ def k3_loss_fn_variant1(log_p, log_q):
     Args:
         log_p: Log probabilities from reference model (shape: [batch_size, seq_len])
         log_q: Log probabilities from current policy (shape: [batch_size, seq_len])
+        percentile: Fraction of lowest values to apply KL penalty to (default: 0.20 for bottom 20%)
 
     Returns:
         KL divergence estimate with same shape as input, but only non-zero for
-        bottom 20% of log_p values.
+        bottom `percentile` fraction of log_p values across the entire batch.
     """
-    # Flatten to 1D for percentile calculation
+    # Flatten to 1D for percentile calculation across entire batch
     log_p_flat = log_p.reshape(-1)
 
-    # Calculate the index for 20th percentile (k-th smallest value)
-    # For 20th percentile, we want the value at position: n * 0.20
+    # Calculate the index for the specified percentile (k-th smallest value)
+    # For percentile p, we want the value at position: n * p
     n = log_p_flat.numel()
-    k = max(1, int(n * 0.20))  # Ensure k is at least 1
+    k = max(1, int(n * percentile))  # Ensure k is at least 1
 
     # Use torch.kthvalue for O(n) average-case quick-select
     # kthvalue returns (values, indices) where values is the k-th smallest
     threshold_value, _ = torch.kthvalue(log_p_flat, k)
 
-    # Create mask for bottom 20% (values <= threshold)
+    # Create mask for bottom percentile (values <= threshold)
     mask = (log_p <= threshold_value).float()
 
     # Calculate standard k3 loss
     log_ratio = log_p - log_q
     k3_loss = torch.exp(log_ratio) - log_ratio - 1.0
 
-    # Apply mask: only keep loss for bottom 20% of log_p values
-    # Scale by 5.0 to maintain similar magnitude (since we're using 20% of values)
-    return mask * k3_loss * 5.0
+    # Apply mask: only keep loss for bottom percentile of log_p values
+    # Scale by 1/percentile to maintain similar magnitude (since we're using percentile fraction of values)
+    scale_factor = 1.0 / percentile if percentile > 0 else 1.0
+    return mask * k3_loss * scale_factor
 
 
 class LigerFusedLinearGRPOFunctionVariant1(LigerFusedLinearPPOBase):
