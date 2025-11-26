@@ -13,12 +13,17 @@
 # limitations under the License.
 
 """
-GRPO Loss Variant 1: Bottom 20% Percentile Filtering k3_loss_fn.
+GRPO Loss Variant 1: Bottom Percentile Filtering k3_loss_fn (Configurable).
 
-This variant filters for the bottom 20% of log_p values using a quick-select
-approach, then calculates the standard k3 loss only on those filtered values.
+This variant filters for the bottom percentile of log_p values using a quick-select
+O(n) approach, then calculates the standard k3 loss only on those filtered values.
+
+The percentile is calculated across the entire batch (all tokens across all sequences).
+The default is 20%, but this can be configured via the kl_percentile parameter.
+
 The intuition is to focus the KL penalty on tokens where the reference model
-has lower confidence (lower log probabilities).
+has lower confidence (lower log probabilities), allowing more exploration on
+high-confidence tokens.
 """
 
 from typing import Optional
@@ -98,9 +103,10 @@ class LigerFusedLinearGRPOFunctionVariant1(LigerFusedLinearPPOBase):
         loss_type="dapo",
         max_completion_length=None,
         importance_sampling_level="token",
+        kl_percentile=0.20,
         **kwargs,
     ):
-        """GRPO Loss Function with Variant 1 k3_loss_fn."""
+        """GRPO Loss Function with Variant 1 k3_loss_fn (percentile filtering)."""
         per_token_logps = log_probs.gather(dim=-1, index=selected_token_ids.unsqueeze(-1)).squeeze(-1)
 
         # Get reference model probabilities
@@ -135,8 +141,8 @@ class LigerFusedLinearGRPOFunctionVariant1(LigerFusedLinearPPOBase):
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
 
         if beta != 0.0:
-            # Use the variant k3_loss_fn
-            kl_div = k3_loss_fn_variant1(ref_per_token_logps, per_token_logps)
+            # Use the variant k3_loss_fn with configurable percentile
+            kl_div = k3_loss_fn_variant1(ref_per_token_logps, per_token_logps, percentile=kl_percentile)
             per_token_loss = per_token_loss + beta * kl_div
 
         # Loss normalization (same as base implementation)
@@ -196,6 +202,7 @@ class LigerFusedLinearGRPOFunctionVariant1(LigerFusedLinearPPOBase):
         loss_type="dapo",
         max_completion_length=None,
         importance_sampling_level="token",
+        kl_percentile=0.20,
         temperature=1.0,
         compiled=True,
         use_ref_model=True,
@@ -225,13 +232,14 @@ class LigerFusedLinearGRPOFunctionVariant1(LigerFusedLinearPPOBase):
             use_ref_model=use_ref_model,
             chunk_size=chunk_size,
             importance_sampling_level=importance_sampling_level,
+            kl_percentile=kl_percentile,
         )
 
     @staticmethod
     def backward(ctx, grad_output, *grad_metrics):
         grads = LigerFusedLinearPPOBase.backward(ctx, grad_output)
         return (
-            *grads[:6],
+            *grads[:6],  # grad_input, grad_weight, grad_selected_token_ids, grad_attention_mask, grad_advantages, grad_bias
             None,  # grad_ref_per_token_logps
             None,  # grad_old_per_token_logps
             None,  # grad_ref_input
@@ -243,6 +251,7 @@ class LigerFusedLinearGRPOFunctionVariant1(LigerFusedLinearPPOBase):
             None,  # grad_loss_type
             None,  # grad_max_completion_length
             None,  # grad_importance_sampling_level
+            None,  # grad_kl_percentile (new parameter)
             None,  # grad_temperature
             None,  # grad_compiled
             None,  # grad_use_ref_model
@@ -252,12 +261,15 @@ class LigerFusedLinearGRPOFunctionVariant1(LigerFusedLinearPPOBase):
 
 class LigerFusedLinearGRPOLossVariant1(torch.nn.Module):
     """
-    GRPO Loss Variant 1: Bottom 20% Percentile Filtering.
+    GRPO Loss Variant 1: Bottom Percentile Filtering (configurable).
 
     This variant applies the KL penalty only to tokens where the reference model
-    has the lowest 20% of log probabilities. It uses an O(n) quick-select algorithm
-    (torch.kthvalue) to find the 20th percentile threshold, then masks the k3 loss
-    to only apply to those low-confidence tokens.
+    has the lowest percentile of log probabilities. It uses an O(n) quick-select
+    algorithm (torch.kthvalue) to find the percentile threshold, then masks the
+    k3 loss to only apply to those low-confidence tokens.
+
+    The percentile is calculated across the entire batch (all tokens across all
+    sequences in the batch).
 
     The intuition is that focusing KL regularization on tokens where the reference
     model is least confident may allow more exploration on high-confidence tokens
@@ -266,6 +278,7 @@ class LigerFusedLinearGRPOLossVariant1(torch.nn.Module):
     Usage:
         from trl.experimental.liger_kernel_losses.grpo_loss_variant1 import LigerFusedLinearGRPOLossVariant1
 
+        # Use default 20% percentile
         trainer = GRPOTrainer(
             model="Qwen/Qwen2-0.5B-Instruct",
             reward_funcs=accuracy_reward,
@@ -273,6 +286,11 @@ class LigerFusedLinearGRPOLossVariant1(torch.nn.Module):
             train_dataset=dataset,
             loss_class=LigerFusedLinearGRPOLossVariant1,
         )
+
+        # Or customize the percentile
+        from functools import partial
+        custom_loss = partial(LigerFusedLinearGRPOLossVariant1, kl_percentile=0.10)
+        trainer = GRPOTrainer(..., loss_class=custom_loss)
     """
 
     def __init__(
@@ -286,6 +304,7 @@ class LigerFusedLinearGRPOLossVariant1(torch.nn.Module):
         loss_type: str = "dapo",
         max_completion_length: Optional[int] = None,
         importance_sampling_level: str = "token",
+        kl_percentile: float = 0.20,
         temperature: float = 1.0,
     ):
         super().__init__()
@@ -298,6 +317,7 @@ class LigerFusedLinearGRPOLossVariant1(torch.nn.Module):
         self.loss_type = loss_type
         self.max_completion_length = max_completion_length
         self.importance_sampling_level = importance_sampling_level
+        self.kl_percentile = kl_percentile
         self.temperature = temperature
 
     def forward(
@@ -332,6 +352,7 @@ class LigerFusedLinearGRPOLossVariant1(torch.nn.Module):
             self.loss_type,
             self.max_completion_length,
             self.importance_sampling_level,
+            self.kl_percentile,
             self.temperature,
             self.compiled,
             self.use_ref_model,
